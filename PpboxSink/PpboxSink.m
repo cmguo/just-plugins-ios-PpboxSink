@@ -12,6 +12,8 @@
 
 @implementation PpboxSink
 {
+    dispatch_queue_t queue;
+    
     AVCaptureSession *captureSession;
     AVCaptureDevice *videoDevice;
     AVCaptureDevice *audioDevice;
@@ -23,14 +25,14 @@
     AVCaptureAudioDataOutput *audioDataOutput;
     
     AVAssetWriter *writer;
-    AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor;
     AVAssetWriterInput *videoWriterInput;
     AVAssetWriterInput *audioWriterInput;
     
     NSString *outputFile;
+    NSString *outputM3u8;
     CMTime durationSegment;
     
-    PPBOX_HANDLE capture;
+    PPBOX_HANDLE downloader;
 
     uint writeIndex;
     CMTime thisEndTime;
@@ -44,12 +46,30 @@
 	self = [super init];
     
     outputFile = @"Documents/Movie-%.3d.mp4";
+    outputM3u8 = [[NSHomeDirectory() stringByAppendingPathComponent: @"Documents/Movie.m3u8"] retain];
     durationSegment = CMTimeMake(5, 1); // 5 seconds
     
     writeIndex = 0;
     finishIndex = 0;
     
+    // --- the queue for sample buffer delegate ---
+    
+	queue = dispatch_queue_create("com.pplive.ipptv.capture", NULL);
+    
     return self;
+}
+
+
+
+- (void) dealloc
+{
+    dispatch_release(queue);
+}
+
+
+
+static void download_callback(PP_err ec)
+{
 }
 
 
@@ -60,20 +80,13 @@
     
     [self setupPreview];
     
-    [self openWriter];
+    [self writeM3u8];
     
-    //PPBOX_StartP2PEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
+    PPBOX_StartP2PEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
     
-    //capture = PPBOX_CaptureCreate("", [dest UTF8String]);
-    
-    PPBOX_CaptureConfigData config = {
-        2,
-        NULL,
-        NULL
-    };
-    //PPBOX_CaptureInit(capture, &config);
-    
-    
+    NSString *playlink = @"file://";
+    playlink = [playlink stringByAppendingString: outputM3u8];
+    downloader = PPBOX_DownloadOpen([playlink UTF8String], "rtm", [dest UTF8String], download_callback);
 }
 
 
@@ -87,7 +100,18 @@
 
 - (void) stop
 {
+    PPBOX_DownloadClose(downloader);
+    
     [captureSession stopRunning];
+    
+    dispatch_async(queue, ^{
+        if (writer)
+        {
+            NSLog(@"stop file index: %u", writeIndex);
+            
+            [self closeWriter];
+        }
+    });
 }
 
 
@@ -116,7 +140,7 @@
     captureSession.sessionPreset = AVCaptureSessionPresetMedium;
     //self.captureSession.sessionPreset = AVCaptureSessionPreset640x480;
 
-    // --- add video input ---
+    // --- add video device input ---
     
 	videoDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
 	if (videoDevice )
@@ -127,7 +151,7 @@
 		[captureSession addInput: videoDeviceInput];
 	}
     
-    // --- add audio input ---
+    // --- add audio device input ---
     
     audioDevice = [AVCaptureDevice defaultDeviceWithMediaType: AVMediaTypeAudio];
     if (audioDevice)
@@ -148,9 +172,7 @@
 	[videoDataOutput setVideoSettings: [NSDictionary dictionaryWithObject: [NSNumber numberWithInt: kCVPixelFormatType_32BGRA]
                                                                    forKey: (id)kCVPixelBufferPixelFormatTypeKey]]; // BGRA is necessary for manual preview
     
-	dispatch_queue_t video_queue = dispatch_queue_create("com.pplive.ipptv.video", NULL);
-	[videoDataOutput setSampleBufferDelegate: self queue: video_queue];
-	dispatch_release(video_queue);
+	[videoDataOutput setSampleBufferDelegate: self queue: queue];
     	
 	if ([captureSession canAddOutput: videoDataOutput]) {
 		[captureSession addOutput: videoDataOutput];
@@ -161,9 +183,7 @@
     // --- add audio output ---
     
     audioDataOutput = [[AVCaptureAudioDataOutput alloc] init];
-    dispatch_queue_t audio_queue = dispatch_queue_create("com.pplive.ipptv.audio", NULL);
-    [audioDataOutput setSampleBufferDelegate: self queue: audio_queue];
- 	dispatch_release(audio_queue);
+    [audioDataOutput setSampleBufferDelegate: self queue: queue];
        
     if ([captureSession canAddOutput: audioDataOutput]) {
         [captureSession addOutput: audioDataOutput];
@@ -197,7 +217,7 @@
 }
 
 
-- (void) openWriter
+- (void) openWriter: (CMTime *) time
 {
     // --- create the video input ---
     
@@ -226,10 +246,11 @@
          [NSNumber numberWithInt:kCVPixelFormatType_32ARGB], kCVPixelBufferPixelFormatTypeKey,
          nil];
     
-    pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor
+    AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor
                     assetWriterInputPixelBufferAdaptorWithAssetWriterInput: videoWriterInput
                     sourcePixelBufferAttributes: sourcePixelBufferAttributesDictionary];
-        
+    (void)pixelBufferAdaptor;
+    
     // --- create the audio input ---
     
     AudioChannelLayout acl;
@@ -285,16 +306,11 @@
     else
         NSLog(@"Can't add audio write input");
     
-}
 
-
-
-- (void) closeWriter
-{
-    [videoWriterInput release];
-    [audioWriterInput release];
-    [pixelBufferAdaptor release];
-    [writer release];
+    // --- start writing ---
+    
+    [writer startWriting];
+    [writer startSessionAtSourceTime: *time];
 }
 
 
@@ -303,6 +319,46 @@
 {
     [thisWriter release];
     ++finishIndex;
+    
+    [self writeM3u8];
+    
+    [self release];
+}
+
+
+
+- (void) closeWriter
+{
+    PpboxSink * thisSink = [self retain];
+    AVAssetWriter * thisWriter = [writer retain];
+    uint thisIndex = writeIndex;
+    [writer finishWritingWithCompletionHandler: ^(){
+        [thisSink didFinishWrite: thisWriter ofIndex: thisIndex];
+    }];
+    
+    ++writeIndex;
+    
+    //[videoWriterInput release];
+    //[audioWriterInput release];
+    [writer release];
+}
+
+
+
+- (void) writeM3u8
+{
+    char const * filename = [outputM3u8  UTF8String];
+    char const * filename_tmp = [[outputM3u8 stringByAppendingString: @".tmp"] UTF8String];
+    FILE * file = fopen(filename_tmp, "w+");
+    uint startIndex = finishIndex > 5 ? finishIndex - 5 : 0;
+    fprintf(file, "#EXTM3U\r\nEXT-X-TARGETDURATION:5\r\n#EXT-X-MEDIA-SEQUENCE:%u\r\n", startIndex + 1);
+    for (uint i = startIndex; i < finishIndex; ++i)
+    {
+        fprintf(file, "#EXTINF:5,\r\nMovie-%.3u.mp4\r\n", i);
+    }
+    fclose(file);
+    unlink(filename);
+    rename(filename_tmp, filename);
 }
 
 
@@ -317,29 +373,24 @@
         
     if (CMTIME_IS_INVALID(thisEndTime))
     {
-        [self openWriter];
-        [writer startWriting];
-        [writer startSessionAtSourceTime: lastSampleTime];
+        NSLog(@"start file index: %u", writeIndex);
         
         thisEndTime = CMTimeAdd(lastSampleTime, durationSegment);
+        
+        [self openWriter: &lastSampleTime];
     }
     
     if (CMTimeCompare(lastSampleTime, thisEndTime) >= 0)
     {
-        AVAssetWriter * thisWriter = [writer retain];
-        uint thisIndex = writeIndex;
-        [writer finishWritingWithCompletionHandler: ^{
-            [self didFinishWrite: thisWriter ofIndex: thisIndex];
-        }];
+        NSLog(@"stop file index: %u", writeIndex);
         
         [self closeWriter];
-        ++writeIndex;
         
-        [self openWriter];
-        [writer startWriting];
-        [writer startSessionAtSourceTime: lastSampleTime];
-       
+        NSLog(@"start file index: %u", writeIndex);
+        
         thisEndTime = CMTimeAdd(thisEndTime, durationSegment);
+        
+        [self openWriter: &lastSampleTime];
     }
     
     if (writer.status > AVAssetWriterStatusWriting )
