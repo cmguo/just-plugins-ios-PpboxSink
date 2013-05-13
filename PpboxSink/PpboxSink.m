@@ -64,6 +64,7 @@
 - (void) dealloc
 {
     dispatch_release(queue);
+    [super dealloc];
 }
 
 
@@ -101,14 +102,13 @@ static void download_callback(PP_err ec)
 - (void) stop
 {
     PPBOX_DownloadClose(downloader);
+    downloader = NULL;
     
     [captureSession stopRunning];
     
     dispatch_async(queue, ^{
         if (writer)
         {
-            NSLog(@"stop file index: %u", writeIndex);
-            
             [self closeWriter];
         }
     });
@@ -217,6 +217,16 @@ static void download_callback(PP_err ec)
 }
 
 
+
+- (NSString *) videoUrl: (uint) index
+{
+    NSString * thisOutputFile = [NSString stringWithFormat: outputFile, index];
+    thisOutputFile = [NSHomeDirectory() stringByAppendingPathComponent: thisOutputFile];
+    return thisOutputFile;
+}
+
+
+
 - (void) openWriter: (CMTime *) time
 {
     // --- create the video input ---
@@ -274,9 +284,10 @@ static void download_callback(PP_err ec)
     
     // ---- create writer ---
         
+    NSLog(@"start file index: %u", writeIndex);
+
     NSError *error = nil;
-    NSString * thisOutputFile = [NSString stringWithFormat: outputFile, writeIndex];
-    thisOutputFile = [NSHomeDirectory() stringByAppendingPathComponent: thisOutputFile];
+    NSString * thisOutputFile = [self videoUrl: writeIndex];
     unlink([thisOutputFile UTF8String]);
     
     writer = [[AVAssetWriter alloc] initWithURL: [NSURL fileURLWithPath: thisOutputFile]
@@ -322,6 +333,21 @@ static void download_callback(PP_err ec)
     
     [self writeM3u8];
     
+    if (finishIndex > 5) {
+        NSLog(@"remove file index: %u", finishIndex - 6);
+        NSString * toRemoveFile = [self videoUrl: finishIndex - 6];
+        unlink([toRemoveFile UTF8String]);
+    }
+    
+    if (downloader == NULL) {
+        uint startIndex = finishIndex > 5 ? finishIndex - 5 : 0;
+        for (; startIndex < finishIndex; ++startIndex) {
+            NSLog(@"remove file index: %u", startIndex);
+            NSString * toRemoveFile = [self videoUrl: startIndex];
+            unlink([toRemoveFile UTF8String]);
+        }
+    }
+    
     [self release];
 }
 
@@ -329,6 +355,8 @@ static void download_callback(PP_err ec)
 
 - (void) closeWriter
 {
+    NSLog(@"finish file index: %u", writeIndex);
+    
     PpboxSink * thisSink = [self retain];
     AVAssetWriter * thisWriter = [writer retain];
     uint thisIndex = writeIndex;
@@ -358,7 +386,7 @@ static void download_callback(PP_err ec)
     }
     fclose(file);
     unlink(filename);
-    rename(filename_tmp, filename);
+    rename(filename_tmp, filename);		
 }
 
 
@@ -373,8 +401,6 @@ static void download_callback(PP_err ec)
         
     if (CMTIME_IS_INVALID(thisEndTime))
     {
-        NSLog(@"start file index: %u", writeIndex);
-        
         thisEndTime = CMTimeAdd(lastSampleTime, durationSegment);
         
         [self openWriter: &lastSampleTime];
@@ -382,12 +408,8 @@ static void download_callback(PP_err ec)
     
     if (CMTimeCompare(lastSampleTime, thisEndTime) >= 0)
     {
-        NSLog(@"stop file index: %u", writeIndex);
-        
         [self closeWriter];
-        
-        NSLog(@"start file index: %u", writeIndex);
-        
+                
         thisEndTime = CMTimeAdd(thisEndTime, durationSegment);
         
         [self openWriter: &lastSampleTime];
