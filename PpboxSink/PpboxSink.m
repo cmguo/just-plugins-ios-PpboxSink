@@ -32,7 +32,7 @@
     NSString *outputM3u8;
     CMTime durationSegment;
     
-    PPBOX_HANDLE downloader;
+    PP_handle downloader;
 
     uint writeIndex;
     CMTime thisEndTime;
@@ -69,7 +69,7 @@
 
 
 
-static void download_callback(PP_err ec)
+static void download_callback(PP_context c, PP_err ec)
 {
 }
 
@@ -83,7 +83,7 @@ static void download_callback(PP_err ec)
     
     [self writeM3u8];
     
-    PPBOX_StartP2PEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
+    PPBOX_StartEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
     
     NSString *playlink = @"file://";
     playlink = [playlink stringByAppendingString: outputM3u8];
@@ -145,6 +145,7 @@ static void download_callback(PP_err ec)
 	videoDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
 	if (videoDevice )
     {
+        //[videoDevice set]
 		NSError *error;
 		videoDeviceInput = [AVCaptureDeviceInput deviceInputWithDevice: videoDevice
                                                                  error: &error];
@@ -169,6 +170,7 @@ static void download_callback(PP_err ec)
     //videoDataOutput.minFrameDuration = CMTimeMake(1, frameRate);
     //videoDataOutput.minFrameDuration = CMTimeMake(1, 1000);
 
+    
 	[videoDataOutput setVideoSettings: [NSDictionary dictionaryWithObject: [NSNumber numberWithInt: kCVPixelFormatType_32BGRA]
                                                                    forKey: (id)kCVPixelBufferPixelFormatTypeKey]]; // BGRA is necessary for manual preview
     
@@ -179,6 +181,19 @@ static void download_callback(PP_err ec)
     } else {
 		NSLog(@"Couldn't add video data output");
 	}
+    
+    AVCaptureConnection *conn = [videoDataOutput connectionWithMediaType:AVMediaTypeVideo];
+    
+    if (conn.isVideoMinFrameDurationSupported) {
+        conn.videoMinFrameDuration = CMTimeMake(1, 20);
+    } else {
+		NSLog(@"Couldn't set video frame rate (min)");
+   }
+    if (conn.isVideoMaxFrameDurationSupported) {
+        conn.videoMaxFrameDuration = CMTimeMake(1, 20);
+    } else {
+		NSLog(@"Couldn't set video frame rate (max)");
+    }
     
     // --- add audio output ---
     
@@ -211,7 +226,7 @@ static void download_callback(PP_err ec)
 {
     previewLayer = [[AVCaptureVideoPreviewLayer alloc] initWithSession: captureSession];
 	previewLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
-	[previewLayer setFrame:CGRectMake(0, 0, 320*352/288, 320)];
+	[previewLayer setFrame:CGRectMake(0, 0, 360, 480)];
     //[videoDevice ]
     previewLayer.hidden = NO;
 }
@@ -231,21 +246,20 @@ static void download_callback(PP_err ec)
 {
     // --- create the video input ---
     
-    CGSize size = CGSizeMake(480, 320);
+    CGSize size = CGSizeMake(480, 360);
     
-    NSDictionary *videoCompressionProps =[NSDictionary dictionaryWithObjectsAndKeys:
-                                          [NSNumber numberWithDouble:128.0*1024.0], AVVideoAverageBitRateKey,
-                                          nil ];
+    NSDictionary *videoCompressionProps = [[NSMutableDictionary alloc] init];
+    [videoCompressionProps setValue: AVVideoProfileLevelH264Main41 forKey: AVVideoProfileLevelKey];
+    [videoCompressionProps setValue: [NSNumber numberWithDouble: 256.0 * 1024.0] forKey: AVVideoAverageBitRateKey];
 
-    NSDictionary *videoSettings = [NSDictionary dictionaryWithObjectsAndKeys:
-                                   AVVideoCodecH264, AVVideoCodecKey,
-                                   [NSNumber numberWithInt:size.width], AVVideoWidthKey,
-                                   [NSNumber numberWithInt:size.height], AVVideoHeightKey,
-                                   videoCompressionProps, AVVideoCompressionPropertiesKey,
-                                   nil];
+    NSDictionary *videoSettings = [[NSMutableDictionary alloc] init];
+    [videoSettings setValue: AVVideoCodecH264 forKey: AVVideoCodecKey];
+    [videoSettings setValue: [NSNumber numberWithInt:size.width] forKey: AVVideoWidthKey];
+    [videoSettings setValue: [NSNumber numberWithInt:size.height] forKey: AVVideoHeightKey];
+    [videoSettings setValue: videoCompressionProps forKey: AVVideoCompressionPropertiesKey];
     
     videoWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType: AVMediaTypeVideo
-                                                               outputSettings: videoSettings];
+                                                          outputSettings: videoSettings];
     
     NSParameterAssert(videoWriterInput);
     
@@ -254,7 +268,7 @@ static void download_callback(PP_err ec)
     NSDictionary *sourcePixelBufferAttributesDictionary =
         [NSDictionary dictionaryWithObjectsAndKeys:
          [NSNumber numberWithInt:kCVPixelFormatType_32ARGB], kCVPixelBufferPixelFormatTypeKey,
-         nil];
+         nil];	
     
     AVAssetWriterInputPixelBufferAdaptor *pixelBufferAdaptor = [AVAssetWriterInputPixelBufferAdaptor
                     assetWriterInputPixelBufferAdaptorWithAssetWriterInput: videoWriterInput
@@ -267,17 +281,17 @@ static void download_callback(PP_err ec)
     bzero( &acl, sizeof(acl));
     acl.mChannelLayoutTag = kAudioChannelLayoutTag_Mono;
     
-    NSDictionary* audioDataOutputSettings = [ NSDictionary dictionaryWithObjectsAndKeys:
-                                         [ NSNumber numberWithInt: kAudioFormatMPEG4AAC ], AVFormatIDKey,
-                                         [ NSNumber numberWithInt:64000], AVEncoderBitRateKey,
-                                         //[ NSNumber numberWithInt: 16 ], AVEncoderBitDepthHintKey,
-                                         [ NSNumber numberWithFloat: 44100.0 ], AVSampleRateKey,
-                                         [ NSNumber numberWithInt: 1 ], AVNumberOfChannelsKey,
-                                         [ NSData dataWithBytes: &acl length: sizeof( acl ) ], AVChannelLayoutKey,
-                                         nil ];
+    NSDictionary* audioDataOutputSettings = [[NSMutableDictionary alloc] init];
+    [audioDataOutputSettings setValue: [NSNumber numberWithInt: kAudioFormatMPEG4AAC] forKey: AVFormatIDKey];
+    [audioDataOutputSettings setValue: [NSNumber numberWithInt:64000] forKey: AVEncoderBitRateKey];
+    //[audioDataOutputSettings setValue: [NSNumber numberWithInt:16] forKey: AVEncoderBitDepthHintKey];
+    [audioDataOutputSettings setValue: [NSNumber numberWithInt:44100] forKey: AVSampleRateKey];
+    [audioDataOutputSettings setValue: [NSNumber numberWithInt:1] forKey: AVNumberOfChannelsKey];
+    [audioDataOutputSettings setValue: [NSData dataWithBytes: &acl length: sizeof(acl)] forKey: AVChannelLayoutKey];
+  
     
     audioWriterInput = [AVAssetWriterInput assetWriterInputWithMediaType: AVMediaTypeAudio
-                                                                outputSettings: audioDataOutputSettings ];
+                                                          outputSettings: audioDataOutputSettings ];
     
     audioWriterInput.expectsMediaDataInRealTime = YES;
     
