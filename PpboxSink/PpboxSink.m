@@ -8,7 +8,7 @@
 
 #import "PpboxSink.h"
 
-#include "plugins/ppbox/ppbox_static.h"
+#include "plugins/just/just_static.h"
 
 @implementation PpboxSink
 {
@@ -83,11 +83,11 @@ static void download_callback(PP_context c, PP_err ec)
     
     [self writeM3u8];
     
-    PPBOX_StartEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
+    JUST_StartEngine("12", "161", "08ae1acd062ea3ab65924e07717d5994");
     
     NSString *playlink = @"file://";
     playlink = [playlink stringByAppendingString: outputM3u8];
-    downloader = PPBOX_DownloadOpen([playlink UTF8String], "rtm", [dest UTF8String], download_callback);
+    downloader = JUST_DownloadOpen([playlink UTF8String], "rtm", [dest UTF8String], download_callback);
 }
 
 
@@ -101,7 +101,7 @@ static void download_callback(PP_context c, PP_err ec)
 
 - (void) stop
 {
-    PPBOX_DownloadClose(downloader);
+    JUST_DownloadClose(downloader);
     downloader = NULL;
     
     [captureSession stopRunning];
@@ -118,7 +118,7 @@ static void download_callback(PP_context c, PP_err ec)
 
 - (void) close
 {
-    //PPBOX_CaptureDestroy(capture);
+    //JUST_CaptureDestroy(capture);
 }
 
 
